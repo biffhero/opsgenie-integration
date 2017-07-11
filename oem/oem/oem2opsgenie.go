@@ -17,12 +17,14 @@ import (
 	"time"
 	"io/ioutil"
 	"fmt"
+	"net/url"
 )
 
 var API_KEY = ""
+var PROXY_ENABLED=""
 var TOTAL_TIME = 60
 var parameters = map[string]string{}
-var configParameters = map[string]string{"apiKey": API_KEY, "opsgenie.api.url": "https://api.opsgenie.com", "logger": "warning"}
+var configParameters = map[string]string{"apiKey": API_KEY, "opsgenie.api.url": "https://api.opsgenie.com", "oem2opsgenie.logger": "warning",  "nagios2opsgenie.http.proxy.enabled" : PROXY_ENABLED, "nagios2opsgenie.http.proxy.port" : "1111", "nagios2opsgenie.http.proxy.host": "localhost", "nagios2opsgenie.http.proxy.protocol":"http", "nagios2opsgenie.http.proxy.username": "", "nagios2opsgenie.http.proxy.password": ""}
 var configPath = "/etc/opsgenie/conf/opsgenie-integration.conf"
 var levels = map[string]log.Level{"info": log.Info, "debug": log.Debug, "warning": log.Warning, "error": log.Error}
 var logger log.Logger
@@ -77,7 +79,7 @@ func readConfigFile(file io.Reader){
 }
 
 func configureLogger ()log.Logger{
-	level := configParameters["logger"]
+	level := configParameters["oem2opsgenie.logger"]
 	var logFilePath = parameters["logPath"]
 
 	if len(logFilePath) == 0 {
@@ -105,19 +107,39 @@ func configureLogger ()log.Logger{
 	return tmpLogger
 }
 
-func getHttpClient (timeout int) *http.Client{
-	seconds := (TOTAL_TIME/12)*2*timeout
+func getHttpClient (timeout int) *http.Client {
+	seconds := (TOTAL_TIME / 12) * 2 * timeout
+	PROXY_ENABLED = configParameters["oem2opsgenie.http.proxy.enabled"]
+	var proxyHost = configParameters["oem2opsgenie.http.proxy.host"]
+	var proxyPort = configParameters["oem2opsgenie.http.proxy.port"]
+	var scheme = configParameters["oem2opsgenie.http.proxy.protocol"]
+	proxy := http.ProxyFromEnvironment
+
+
+	if PROXY_ENABLED == "true" {
+
+		u := new(url.URL)
+		if scheme == ""{
+			u.Scheme = "http"
+		} else {
+			u.Scheme = scheme
+		}
+
+		u.Host =  proxyHost + ":" + proxyPort
+		logger.Debug("Formed Proxy url: ", u)
+
+		proxy = http.ProxyURL(u)
+	}
 	client := &http.Client{
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{InsecureSkipVerify : true},
-			Proxy: http.ProxyFromEnvironment,
+			Proxy: proxy,
 			Dial: func(netw, addr string) (net.Conn, error) {
 				conn, err := net.DialTimeout(netw, addr, time.Second * time.Duration(seconds))
 				if err != nil {
 					if logger != nil {
 						logger.Error("Error occurred while connecting: ", err)
 					}
-
 					return nil, err
 				}
 				conn.SetDeadline(time.Now().Add(time.Second * time.Duration(seconds)))
@@ -128,8 +150,12 @@ func getHttpClient (timeout int) *http.Client{
 	return client
 }
 
+
 func http_post()  {
 	parameters["apiKey"] = configParameters["apiKey"]
+	var proxyUsername = configParameters["oem2opsgenie.http.proxy.username"]
+	var proxyPassword = configParameters["oem2opsgenie.http.proxy.password"]
+
 
 	var logPrefix = "[OEM2OpsGenie] "
 
@@ -165,6 +191,10 @@ func http_post()  {
 	for i := 1; i <= 3; i++ {
 		client := getHttpClient(i)
 
+		if proxyUsername != "" && PROXY_ENABLED == "true" {
+			request.SetBasicAuth(proxyUsername,proxyPassword)
+		}
+
 		if logger != nil {
 			logger.Warning(logPrefix + "Trying to send data to " + target + " with timeout: ", (TOTAL_TIME / 12) * 2 * i)
 		}
@@ -197,7 +227,7 @@ func http_post()  {
 			}
 		}else {
 			if logger != nil {
-				logger.Error(logPrefix + "Failed to post data from OEM to " + target, error)
+				logger.Error(logPrefix + "Failed to post data from OEM. " , error)
 			}
 		}
 		if resp != nil{

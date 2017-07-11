@@ -17,11 +17,13 @@ import (
 	"fmt"
 	"io/ioutil"
 	"crypto/tls"
+	"net/url"
 )
 
 var API_KEY = ""
+var PROXY_ENABLED=""
 var TOTAL_TIME = 60
-var configParameters = map[string]string{"apiKey": API_KEY,"zenoss2opsgenie.logger":"warning","opsgenie.api.url":"https://api.opsgenie.com"}
+var configParameters = map[string]string{"apiKey": API_KEY,"zenoss2opsgenie.logger":"warning","opsgenie.api.url":"https://api.opsgenie.com", "zenoss2opsgenie.http.proxy.enabled" : PROXY_ENABLED, "zenoss2opsgenie.http.proxy.port" : "1111", "zenoss2opsgenie.http.proxy.host": "localhost", "zenoss2opsgenie.http.proxy.protocol":"http", "zenoss2opsgenie.http.proxy.username": "", "zenoss2opsgenie.http.proxy.password": ""}
 var parameters = make(map[string]interface{})
 var configPath = "/etc/opsgenie/conf/opsgenie-integration.conf"
 var levels = map [string]log.Level{"info":log.Info,"debug":log.Debug,"warning":log.Warning,"error":log.Error}
@@ -117,22 +119,43 @@ func configureLogger ()log.Logger{
 	return tmpLogger
 }
 
-func getHttpClient (tryNumber int) *http.Client{
-	timeout := (TOTAL_TIME/12)*2*tryNumber
+
+func getHttpClient (timeout int) *http.Client {
+	seconds := (TOTAL_TIME / 12) * 2 * timeout
+	PROXY_ENABLED = configParameters["zenoss2opsgenie.http.proxy.enabled"]
+	var proxyHost = configParameters["zenoss2opsgenie.http.proxy.host"]
+	var proxyPort = configParameters["zenoss2opsgenie.http.proxy.port"]
+	var scheme = configParameters["zenoss2opsgenie.http.proxy.protocol"]
+	proxy := http.ProxyFromEnvironment
+
+
+	if PROXY_ENABLED == "true" {
+
+		u := new(url.URL)
+		if scheme == ""{
+			u.Scheme = "http"
+		} else {
+			u.Scheme = scheme
+		}
+
+		u.Host =  proxyHost + ":" + proxyPort
+		logger.Debug("Formed Proxy url: ", u)
+
+		proxy = http.ProxyURL(u)
+	}
 	client := &http.Client{
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{InsecureSkipVerify : true},
-			Proxy: http.ProxyFromEnvironment,
+			Proxy: proxy,
 			Dial: func(netw, addr string) (net.Conn, error) {
-				conn, err := net.DialTimeout(netw, addr, time.Second * time.Duration(timeout))
+				conn, err := net.DialTimeout(netw, addr, time.Second * time.Duration(seconds))
 				if err != nil {
 					if logger != nil {
 						logger.Error("Error occurred while connecting: ", err)
 					}
-
 					return nil, err
 				}
-				conn.SetDeadline(time.Now().Add(time.Second * time.Duration(timeout)))
+				conn.SetDeadline(time.Now().Add(time.Second * time.Duration(seconds)))
 				return conn, nil
 			},
 		},
@@ -142,6 +165,7 @@ func getHttpClient (tryNumber int) *http.Client{
 
 func getEventDetailsFromZenoss(){
 	zenossApiUrl := configParameters["zenoss.command_url"]
+
 	data := [1]interface {}{map[string]interface {}{"evid":parameters["evid"].(string)}}
 	zenossParams := map[string]interface{}{"action":"EventsRouter", "method":"detail", "data": data, "type":"rpc", "tid":1}
 
@@ -255,7 +279,7 @@ func postToOpsGenie() {
 			}
 		}else {
 			if logger != nil {
-				logger.Error(logPrefix + "Failed to post data from Zenoss to " + target, error)
+				logger.Error(logPrefix + "Failed to post data from Zenoss. ", error)
 			}
 		}
 		if resp != nil{

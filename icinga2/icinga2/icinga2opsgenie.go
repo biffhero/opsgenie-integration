@@ -17,12 +17,14 @@ import (
 	"fmt"
 	"io/ioutil"
 	"crypto/tls"
+	"net/url"
 )
 
 var ICINGA_SERVER = "default"
+var PROXY_ENABLED=""
 var API_KEY = ""
 var TOTAL_TIME = 60
-var configParameters = map[string]string{"apiKey": API_KEY,"icinga_server": ICINGA_SERVER,"icinga2opsgenie.logger":"warning","opsgenie.api.url":"https://api.opsgenie.com"}
+var configParameters = map[string]string{"apiKey": API_KEY,"icinga_server": ICINGA_SERVER,"icinga2opsgenie.logger":"warning","opsgenie.api.url":"https://api.opsgenie.com", "icinga2opsgenie.http.proxy.enabled" : PROXY_ENABLED, "icinga2opsgenie.http.proxy.port" : "1111", "icinga2opsgenie.http.proxy.host": "localhost", "icinga2opsgenie.http.proxy.protocol":"http", "icinga2opsgenie.http.proxy.username": "", "icinga2opsgenie.http.proxy.password": ""}
 var parameters = make(map[string]string)
 var configPath = "/etc/opsgenie/conf/opsgenie-integration.conf"
 var levels = map [string]log.Level{"info":log.Info,"debug":log.Debug,"warning":log.Warning,"error":log.Error}
@@ -119,12 +121,34 @@ func configureLogger ()log.Logger{
 	return tmpLogger
 }
 
-func getHttpClient (timeout int) *http.Client{
-	seconds := (TOTAL_TIME/12)*2*timeout
+
+func getHttpClient (timeout int) *http.Client {
+	seconds := (TOTAL_TIME / 12) * 2 * timeout
+	PROXY_ENABLED = configParameters["icinga2opsgenie.http.proxy.enabled"]
+	var proxyHost = configParameters["icinga2opsgenie.http.proxy.host"]
+	var proxyPort = configParameters["icinga2opsgenie.http.proxy.port"]
+	var scheme = configParameters["icinga2opsgenie.http.proxy.protocol"]
+	proxy := http.ProxyFromEnvironment
+
+
+	if PROXY_ENABLED == "true" {
+
+		u := new(url.URL)
+		if scheme == ""{
+			u.Scheme = "http"
+		} else {
+			u.Scheme = scheme
+		}
+
+		u.Host =  proxyHost + ":" + proxyPort
+		logger.Debug("Formed Proxy url: ", u)
+
+		proxy = http.ProxyURL(u)
+	}
 	client := &http.Client{
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{InsecureSkipVerify : true},
-			Proxy: http.ProxyFromEnvironment,
+			Proxy: proxy,
 			Dial: func(netw, addr string) (net.Conn, error) {
 				conn, err := net.DialTimeout(netw, addr, time.Second * time.Duration(seconds))
 				if err != nil {
@@ -143,6 +167,9 @@ func getHttpClient (timeout int) *http.Client{
 
 func http_post()  {
 	var logPrefix = ""
+	var proxyUsername = configParameters["icinga2opsgenie.http.proxy.username"]
+	var proxyPassword = configParameters["icinga2opsgenie.http.proxy.password"]
+
 	if parameters["entity_type"] == "host"{
 		logPrefix = "[HostName: "+ parameters["host_name"] + ", HostState: "+ parameters["host_state"] +"]"
 	}else{
@@ -170,6 +197,10 @@ func http_post()  {
 		body := bytes.NewBuffer(buf)
 		request, _ := http.NewRequest("POST", apiUrl, body)
 		client := getHttpClient(i)
+
+		if proxyUsername != "" && PROXY_ENABLED == "true" {
+			request.SetBasicAuth(proxyUsername,proxyPassword)
+		}
 
 		if logger != nil {
 			logger.Warning(logPrefix + "Trying to send data to OpsGenie with timeout: ", (TOTAL_TIME / 12) * 2 * i)
